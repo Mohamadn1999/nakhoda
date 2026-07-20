@@ -3,3 +3,4 @@ xray/
 *.zip
 .env
 *.log
+.DS_Store
