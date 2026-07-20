@@ -2,18 +2,14 @@
   "name": "railway-xray-panel",
   "version": "2.0.0",
   "description": "Free Xray Panel on Railway",
-  "main": "server.js",
+  "main": "start.js",
   "scripts": {
-    "start": "node start.js",
-    "postinstall": "node install-xray.js"
+    "start": "node start.js"
   },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "uuid": "^9.0.0",
-    "archiver": "^6.0.1",
-    "extract-zip": "^2.0.1",
-    "node-fetch": "^2.7.0",
     "fs-extra": "^11.2.0"
   }
 }
