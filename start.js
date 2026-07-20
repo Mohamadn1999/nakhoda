@@ -1,483 +1,655 @@
+const express = require('express');
+const cors = require('cors');
 const { execSync, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs-extra');
+const { v4: uuidv4 } = require('uuid');
 
-const XRAY_PATH = path.join(__dirname, 'xray', 'xray');
-const CONFIG_PATH = path.join(__dirname, 'xray', 'config.json');
 const PORT = process.env.PORT || 3000;
-
-// دامنه Railway
 const RAILWAY_DOMAIN = process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost';
 const RAILWAY_URL = `https://${RAILWAY_DOMAIN}`;
+const UUID = process.env.UUID || uuidv4();
 
-// تولید کانفیگ Xray
-function generateXrayConfig() {
-    const uuid = process.env.UUID || execSync('uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid').toString().trim();
-    
-    const xrayConfig = {
-        "log": {
-            "loglevel": "warning"
-        },
-        "inbounds": [
-            {
-                "port": 8080,
-                "protocol": "vmess",
-                "settings": {
-                    "clients": [
-                        {
-                            "id": uuid,
-                            "alterId": 0,
-                            "security": "auto"
-                        }
-                    ]
-                },
-                "streamSettings": {
-                    "network": "ws",
-                    "wsSettings": {
-                        "path": "/ws"
+// مسیرهای Xray
+const XRAY_DIR = path.join(__dirname, 'xray');
+const XRAY_PATH = path.join(XRAY_DIR, 'xray');
+const CONFIG_PATH = path.join(XRAY_DIR, 'config.json');
+
+// تنظیمات پیش‌فرض Xray
+const xrayConfig = {
+    "log": {
+        "loglevel": "warning"
+    },
+    "inbounds": [
+        {
+            "port": 8080,
+            "protocol": "vmess",
+            "settings": {
+                "clients": [
+                    {
+                        "id": UUID,
+                        "alterId": 0,
+                        "security": "auto"
                     }
-                }
+                ]
             },
-            {
-                "port": 8081,
-                "protocol": "vless",
-                "settings": {
-                    "clients": [
-                        {
-                            "id": uuid,
-                            "encryption": "none"
-                        }
-                    ],
-                    "decryption": "none"
-                },
-                "streamSettings": {
-                    "network": "ws",
-                    "wsSettings": {
-                        "path": "/vless"
-                    },
-                    "security": "none"
-                }
-            },
-            {
-                "port": 8082,
-                "protocol": "trojan",
-                "settings": {
-                    "clients": [
-                        {
-                            "password": uuid.substring(0, 16),
-                            "email": "user@railway.app"
-                        }
-                    ]
-                },
-                "streamSettings": {
-                    "network": "ws",
-                    "wsSettings": {
-                        "path": "/trojan"
-                    },
-                    "security": "none"
+            "streamSettings": {
+                "network": "ws",
+                "wsSettings": {
+                    "path": "/vmess-ws"
                 }
             }
-        ],
-        "outbounds": [
-            {
-                "protocol": "freedom",
-                "settings": {}
+        },
+        {
+            "port": 8081,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": UUID,
+                        "encryption": "none"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "ws",
+                "wsSettings": {
+                    "path": "/vless-ws"
+                }
             }
-        ]
-    };
+        },
+        {
+            "port": 8082,
+            "protocol": "trojan",
+            "settings": {
+                "clients": [
+                    {
+                        "password": UUID.substring(0, 16),
+                        "email": "user@railway.app"
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "ws",
+                "wsSettings": {
+                    "path": "/trojan-ws"
+                }
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "settings": {}
+        }
+    ]
+};
 
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(xrayConfig, null, 2));
-    return { uuid, config: xrayConfig };
-}
-
-// نصب Xray
-async function installXray() {
+// دانلود و نصب Xray
+async function downloadXray() {
+    // اگر از قبل نصب شده، رد کن
     if (fs.existsSync(XRAY_PATH)) {
         console.log('✅ Xray already installed');
-        return;
+        return true;
     }
 
-    console.log('📦 Installing Xray...');
-    const os = process.platform;
-    const arch = process.arch;
+    console.log('📦 Downloading Xray...');
     
-    let downloadUrl = '';
-    
-    if (os === 'linux' && arch === 'x64') {
-        downloadUrl = 'https://github.com/XTLS/Xray-core/releases/download/v1.8.10/Xray-linux-64.zip';
-    } else if (os === 'linux' && arch === 'arm64') {
-        downloadUrl = 'https://github.com/XTLS/Xray-core/releases/download/v1.8.10/Xray-linux-arm64-v8a.zip';
-    } else {
-        // Fallback - استفاده از wget
-        console.log('⚠️ Unknown platform, trying generic install...');
-    }
-
     try {
-        fs.ensureDirSync(path.join(__dirname, 'xray'));
+        // ساخت پوشه xray
+        fs.ensureDirSync(XRAY_DIR);
         
-        if (downloadUrl) {
-            execSync(`wget -q "${downloadUrl}" -O xray.zip && unzip -qo xray.zip -d xray/ && rm xray.zip`, {
-                cwd: __dirname,
-                stdio: 'inherit'
-            });
-        }
+        // تشخیص سیستم عامل
+        const isARM = process.arch === 'arm64';
+        const downloadUrl = isARM 
+            ? 'https://github.com/XTLS/Xray-core/releases/download/v1.8.10/Xray-linux-arm64-v8a.zip'
+            : 'https://github.com/XTLS/Xray-core/releases/download/v1.8.10/Xray-linux-64.zip';
         
-        // Make executable
+        console.log(`⬇️ Downloading from: ${downloadUrl}`);
+        
+        // دانلود با wget (روی Railway موجوده)
+        execSync(`wget -q "${downloadUrl}" -O /tmp/xray.zip`, {
+            stdio: 'inherit'
+        });
+        
+        // Extract
+        execSync(`unzip -qo /tmp/xray.zip -d ${XRAY_DIR}/`, {
+            stdio: 'inherit'
+        });
+        
+        // پاک کردن فایل zip
+        fs.removeSync('/tmp/xray.zip');
+        
+        // تنظیم دسترسی اجرایی
         if (fs.existsSync(XRAY_PATH)) {
             fs.chmodSync(XRAY_PATH, '755');
             console.log('✅ Xray installed successfully');
+            return true;
+        } else {
+            console.log('❌ Xray binary not found after extraction');
+            return false;
         }
     } catch (error) {
-        console.error('❌ Xray installation failed:', error.message);
+        console.error('❌ Failed to download Xray:', error.message);
+        console.log('📝 Will run panel only (without proxy)');
+        return false;
     }
 }
 
-// راه‌اندازی Express Panel
-function startPanel(uuid, xrayConfig) {
-    const express = require('express');
-    const cors = require('cors');
-    const app = express();
+// راه‌اندازی Xray
+function startXray() {
+    if (!fs.existsSync(XRAY_PATH)) {
+        console.log('⚠️ Xray not found, skipping proxy');
+        return null;
+    }
 
+    // نوشتن کانفیگ
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(xrayConfig, null, 2));
+    console.log('✅ Xray config written');
+    
+    // اجرای Xray
+    const xrayProcess = spawn(XRAY_PATH, ['run', '-config', CONFIG_PATH], {
+        stdio: 'pipe',
+        env: process.env
+    });
+    
+    xrayProcess.stdout.on('data', (data) => {
+        console.log(`[Xray] ${data}`);
+    });
+    
+    xrayProcess.stderr.on('data', (data) => {
+        console.log(`[Xray] ${data}`);
+    });
+    
+    xrayProcess.on('error', (error) => {
+        console.error('❌ Xray error:', error.message);
+    });
+    
+    console.log('🚀 Xray proxy started');
+    return xrayProcess;
+}
+
+// راه‌اندازی Express Panel
+function startPanel() {
+    const app = express();
+    
     app.use(cors());
     app.use(express.json());
     app.use(express.static('public'));
 
-    // Route for WebSocket proxy
-    app.use('/ws', (req, res) => {
-        // Xray handles WebSocket connections
-        res.status(101).end();
-    });
-
-    // API Routes
+    // API: اطلاعات سرور و کانفیگ‌ها
     app.get('/api/info', (req, res) => {
+        // ساخت لینک Vmess
+        const vmessConfig = {
+            v: "2",
+            ps: "Railway-Xray-Vmess",
+            add: RAILWAY_DOMAIN,
+            port: "443",
+            id: UUID,
+            aid: "0",
+            scy: "auto",
+            net: "ws",
+            type: "none",
+            host: RAILWAY_DOMAIN,
+            path: "/vmess-ws",
+            tls: "tls",
+            sni: RAILWAY_DOMAIN
+        };
+        
+        const vmessLink = "vmess://" + Buffer.from(JSON.stringify(vmessConfig)).toString('base64');
+        
+        // ساخت لینک Vless
+        const vlessLink = `vless://${UUID}@${RAILWAY_DOMAIN}:443?encryption=none&security=tls&sni=${RAILWAY_DOMAIN}&type=ws&host=${RAILWAY_DOMAIN}&path=%2Fvless-ws#Railway-Xray-Vless`;
+        
+        // ساخت لینک Trojan
+        const trojanPassword = UUID.substring(0, 16);
+        const trojanLink = `trojan://${trojanPassword}@${RAILWAY_DOMAIN}:443?security=tls&sni=${RAILWAY_DOMAIN}&type=ws&host=${RAILWAY_DOMAIN}&path=%2Ftrojan-ws#Railway-Xray-Trojan`;
+        
         res.json({
             success: true,
-            server: RAILWAY_URL,
-            vmess: {
-                port: 8080,
-                uuid: uuid,
-                ws_path: '/ws',
-                config: `vmess://${Buffer.from(JSON.stringify({
-                    v: "2",
-                    ps: "Railway-Xray",
-                    add: RAILWAY_DOMAIN,
-                    port: "443",
-                    id: uuid,
-                    aid: "0",
-                    net: "ws",
-                    type: "none",
-                    host: RAILWAY_DOMAIN,
-                    path: "/ws",
-                    tls: "tls"
-                })).toString('base64')}`
-            },
-            vless: {
-                port: 8081,
-                uuid: uuid,
-                ws_path: '/vless',
-                config: `vless://${uuid}@${RAILWAY_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${RAILWAY_DOMAIN}&path=/vless#Railway-VLESS`
-            },
-            trojan: {
-                port: 8082,
-                password: uuid.substring(0, 16),
-                ws_path: '/trojan',
-                config: `trojan://${uuid.substring(0, 16)}@${RAILWAY_DOMAIN}:443?security=tls&type=ws&host=${RAILWAY_DOMAIN}&path=/trojan#Railway-Trojan`
+            domain: RAILWAY_DOMAIN,
+            uuid: UUID,
+            configs: {
+                vmess: {
+                    name: "Vmess + WebSocket + TLS",
+                    link: vmessLink,
+                    details: {
+                        port: 8080,
+                        network: "ws",
+                        path: "/vmess-ws",
+                        tls: true
+                    }
+                },
+                vless: {
+                    name: "Vless + WebSocket + TLS",
+                    link: vlessLink,
+                    details: {
+                        port: 8081,
+                        network: "ws",
+                        path: "/vless-ws",
+                        tls: true
+                    }
+                },
+                trojan: {
+                    name: "Trojan + WebSocket + TLS",
+                    link: trojanLink,
+                    details: {
+                        port: 8082,
+                        password: trojanPassword,
+                        network: "ws",
+                        path: "/trojan-ws",
+                        tls: true
+                    }
+                }
             }
         });
     });
-
-    app.get('/api/test', (req, res) => {
+    
+    // API: تست سلامت
+    app.get('/api/health', (req, res) => {
+        const xrayRunning = fs.existsSync(XRAY_PATH);
         res.json({
-            success: true,
-            message: '✅ Xray Panel is working!',
-            timestamp: new Date().toISOString(),
-            domain: RAILWAY_DOMAIN
+            status: 'online',
+            xray: xrayRunning ? 'running' : 'not installed',
+            domain: RAILWAY_DOMAIN,
+            timestamp: new Date().toISOString()
         });
     });
 
-    // Serve Dashboard
+    // صفحه اصلی
     app.get('/', (req, res) => {
-        res.send(`
-            <!DOCTYPE html>
-            <html lang="fa" dir="rtl">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Railway Xray Panel | پنل رایگان</title>
-                <style>
-                    * { margin: 0; padding: 0; box-sizing: border-box; }
-                    body {
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        min-height: 100vh;
-                        padding: 2rem;
-                        direction: rtl;
-                    }
-                    .container {
-                        max-width: 800px;
-                        margin: 0 auto;
-                    }
-                    .header {
-                        text-align: center;
-                        color: white;
-                        margin-bottom: 2rem;
-                    }
-                    .header h1 {
-                        font-size: 2.5rem;
-                        margin-bottom: 0.5rem;
-                    }
-                    .status-card {
-                        background: rgba(255,255,255,0.95);
-                        border-radius: 1rem;
-                        padding: 2rem;
-                        margin-bottom: 1.5rem;
-                        box-shadow: 0 8px 32px rgba(0,0,0,0.1);
-                    }
-                    .status-badge {
-                        display: inline-flex;
-                        align-items: center;
-                        gap: 0.5rem;
-                        background: #48c78e;
-                        color: white;
-                        padding: 0.5rem 1rem;
-                        border-radius: 2rem;
-                        font-weight: bold;
-                    }
-                    .dot {
-                        width: 10px;
-                        height: 10px;
-                        border-radius: 50%;
-                        background: white;
-                        animation: pulse 2s infinite;
-                    }
-                    @keyframes pulse {
-                        0%, 100% { opacity: 1; }
-                        50% { opacity: 0.5; }
-                    }
-                    .config-cards {
-                        display: grid;
-                        gap: 1rem;
-                    }
-                    .config-card {
-                        background: rgba(255,255,255,0.95);
-                        border-radius: 1rem;
-                        padding: 1.5rem;
-                        box-shadow: 0 8px 32px rgba(0,0,0,0.1);
-                    }
-                    .config-card h3 {
-                        color: #667eea;
-                        margin-bottom: 1rem;
-                        font-size: 1.5rem;
-                    }
-                    .config-link {
-                        background: #f7fafc;
-                        padding: 0.75rem;
-                        border-radius: 0.5rem;
-                        font-family: monospace;
-                        font-size: 0.75rem;
-                        word-break: break-all;
-                        margin: 0.5rem 0;
-                        color: #2d3748;
-                        direction: ltr;
-                        text-align: left;
-                    }
-                    .copy-btn {
-                        background: #667eea;
-                        color: white;
-                        border: none;
-                        padding: 0.5rem 1rem;
-                        border-radius: 0.5rem;
-                        cursor: pointer;
-                        font-size: 0.875rem;
-                        transition: all 0.3s;
-                    }
-                    .copy-btn:hover {
-                        background: #5a67d8;
-                        transform: translateY(-2px);
-                    }
-                    .info-row {
-                        display: flex;
-                        justify-content: space-between;
-                        margin: 0.5rem 0;
-                        padding: 0.5rem;
-                        background: #f7fafc;
-                        border-radius: 0.5rem;
-                    }
-                    .info-label {
-                        color: #4a5568;
-                        font-weight: bold;
-                    }
-                    .info-value {
-                        color: #2d3748;
-                        font-family: monospace;
-                        direction: ltr;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>🚀 Railway Xray Panel</h1>
-                        <p>پنل مدیریت کانفیگ رایگان</p>
-                    </div>
+        res.send(`<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚀 Railway Xray Panel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            min-height: 100vh;
+            padding: 2rem;
+            color: white;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(to right, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+        
+        .header p {
+            color: #a0aec0;
+            font-size: 1.1rem;
+        }
+        
+        .status-banner {
+            background: linear-gradient(135deg, #667eea33, #764ba233);
+            border: 1px solid #667eea55;
+            border-radius: 1rem;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: #48c78e22;
+            border: 1px solid #48c78e55;
+            color: #48c78e;
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            font-weight: bold;
+        }
+        
+        .pulse {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #48c78e;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        
+        .info-item {
+            color: #a0aec0;
+        }
+        
+        .info-item strong {
+            color: white;
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+        
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+        
+        .config-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .config-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 32px rgba(102, 126, 234, 0.2);
+        }
+        
+        .config-card h3 {
+            font-size: 1.3rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .config-details {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 0.5rem;
+            font-size: 0.85rem;
+        }
+        
+        .detail-label {
+            color: #a0aec0;
+        }
+        
+        .detail-value {
+            font-family: monospace;
+            color: #e2e8f0;
+        }
+        
+        .config-link-box {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            margin: 1rem 0;
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 0.7rem;
+            color: #a0aec0;
+            max-height: 60px;
+            overflow-y: auto;
+        }
+        
+        .btn {
+            width: 100%;
+            padding: 0.75rem;
+            border: none;
+            border-radius: 0.5rem;
+            font-size: 0.9rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+        
+        .btn-copy {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+        
+        .btn-copy:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-copy:active {
+            transform: translateY(0);
+        }
+        
+        .toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #48c78e;
+            color: white;
+            padding: 1rem 2rem;
+            border-radius: 0.5rem;
+            z-index: 1000;
+            animation: slideDown 0.3s ease;
+        }
+        
+        @keyframes slideDown {
+            from {
+                transform: translate(-50%, -100%);
+                opacity: 0;
+            }
+            to {
+                transform: translate(-50%, 0);
+                opacity: 1;
+            }
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #a0aec0;
+        }
+        
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Railway Xray Panel</h1>
+            <p>کانفیگ‌های V2Ray رایگان روی Railway</p>
+        </div>
+        
+        <div class="status-banner">
+            <div class="status-badge">
+                <div class="pulse"></div>
+                آنلاین
+            </div>
+            <div class="info-item">
+                دامنه: <strong id="domain">${RAILWAY_DOMAIN}</strong>
+            </div>
+            <div class="info-item">
+                UUID: <strong id="uuid-display">${UUID.substring(0, 8)}...</strong>
+            </div>
+        </div>
+
+        <div id="configs-container" class="loading">
+            <div class="spinner"></div>
+            <p>در حال بارگذاری کانفیگ‌ها...</p>
+        </div>
+    </div>
+
+    <script>
+        async function loadConfigs() {
+            try {
+                const response = await fetch('/api/info');
+                const data = await response.json();
+                
+                const configsHtml = Object.entries(data.configs).map(([key, cfg]) => {
+                    const icons = {
+                        vmess: '📡',
+                        vless: '⚡',
+                        trojan: '🔐'
+                    };
                     
-                    <div class="status-card">
-                        <h2>وضعیت سرور</h2>
-                        <div style="margin-top: 1rem;">
-                            <div class="status-badge">
-                                <div class="dot"></div>
-                                آنلاین
+                    return \`
+                        <div class="config-card">
+                            <h3>\${icons[key] || '🔧'} \${cfg.name}</h3>
+                            <div class="config-details">
+                                <div class="detail-row">
+                                    <span class="detail-label">پروتکل:</span>
+                                    <span class="detail-value">\${key.toUpperCase()}</span>
+                                </div>
+                                <div class="detail-row">
+                                    <span class="detail-label">شبکه:</span>
+                                    <span class="detail-value">WebSocket</span>
+                                </div>
+                                <div class="detail-row">
+                                    <span class="detail-label">TLS:</span>
+                                    <span class="detail-value" style="color: #48c78e;">✅ فعال</span>
+                                </div>
+                                <div class="detail-row">
+                                    <span class="detail-label">مسیر:</span>
+                                    <span class="detail-value">\${cfg.details.path}</span>
+                                </div>
                             </div>
+                            <div class="config-link-box" id="link-\${key}">\${cfg.link}</div>
+                            <button class="btn btn-copy" onclick="copyConfig('link-\${key}', '\${key.toUpperCase()}')">
+                                📋 کپی کانفیگ \${key.toUpperCase()}
+                            </button>
                         </div>
-                        <div class="info-row" style="margin-top: 1rem;">
-                            <span class="info-label">دامنه:</span>
-                            <span class="info-value" id="domain">${RAILWAY_DOMAIN}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="info-label">UUID:</span>
-                            <span class="info-value" id="uuid">${uuid}</span>
-                        </div>
+                    \`;
+                }).join('');
+                
+                document.getElementById('configs-container').innerHTML = configsHtml;
+                document.getElementById('configs-container').classList.remove('loading');
+            } catch (error) {
+                document.getElementById('configs-container').innerHTML = \`
+                    <div style="text-align: center; padding: 2rem; color: #fc8181;">
+                        <p>❌ خطا در بارگذاری کانفیگ‌ها</p>
+                        <button class="btn btn-copy" onclick="location.reload()" style="margin-top: 1rem; width: auto;">
+                            🔄 بارگذاری مجدد
+                        </button>
                     </div>
+                \`;
+            }
+        }
 
-                    <div class="config-cards" id="configs">
-                        <div style="text-align: center; color: white; padding: 2rem;">
-                            <div class="loading" style="border: 3px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto;"></div>
-                            <p style="margin-top: 1rem;">در حال بارگذاری کانفیگ‌ها...</p>
-                        </div>
-                    </div>
-                </div>
+        function copyConfig(elementId, type) {
+            const element = document.getElementById(elementId);
+            const text = element.textContent;
+            
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('✅ کانفیگ ' + type + ' با موفقیت کپی شد!');
+            }).catch(() => {
+                // Fallback for older browsers
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    showToast('✅ کانفیگ ' + type + ' با موفقیت کپی شد!');
+                } catch (err) {
+                    showToast('❌ خطا در کپی کردن. لطفاً دستی کپی کنید.');
+                }
+                document.body.removeChild(textarea);
+            });
+        }
 
-                <script>
-                    async function loadConfigs() {
-                        try {
-                            const response = await fetch('/api/info');
-                            const data = await response.json();
-                            
-                            const configsHtml = \`
-                                <div class="config-card">
-                                    <h3>📡 Vmess Configuration</h3>
-                                    <div class="info-row">
-                                        <span class="info-label">پورت:</span>
-                                        <span class="info-value">\${data.vmess.port}</span>
-                                    </div>
-                                    <div class="info-row">
-                                        <span class="info-label">WebSocket Path:</span>
-                                        <span class="info-value">\${data.vmess.ws_path}</span>
-                                    </div>
-                                    <div class="info-row">
-                                        <span class="info-label">TLS:</span>
-                                        <span class="info-value">✅ فعال (443)</span>
-                                    </div>
-                                    <div class="config-link" id="vmess-link">\${data.vmess.config}</div>
-                                    <button class="copy-btn" onclick="copyConfig('vmess-link', 'Vmess')">📋 کپی کانفیگ Vmess</button>
-                                </div>
+        function showToast(message) {
+            const existingToast = document.querySelector('.toast');
+            if (existingToast) existingToast.remove();
+            
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
 
-                                <div class="config-card">
-                                    <h3>⚡ Vless Configuration</h3>
-                                    <div class="info-row">
-                                        <span class="info-label">پورت:</span>
-                                        <span class="info-value">\${data.vless.port}</span>
-                                    </div>
-                                    <div class="info-row">
-                                        <span class="info-label">WebSocket Path:</span>
-                                        <span class="info-value">\${data.vless.ws_path}</span>
-                                    </div>
-                                    <div class="info-row">
-                                        <span class="info-label">TLS:</span>
-                                        <span class="info-value">✅ فعال (443)</span>
-                                    </div>
-                                    <div class="config-link" id="vless-link">\${data.vless.config}</div>
-                                    <button class="copy-btn" onclick="copyConfig('vless-link', 'Vless')">📋 کپی کانفیگ Vless</button>
-                                </div>
-
-                                <div class="config-card">
-                                    <h3>🔐 Trojan Configuration</h3>
-                                    <div class="info-row">
-                                        <span class="info-label">پورت:</span>
-                                        <span class="info-value">\${data.trojan.port}</span>
-                                    </div>
-                                    <div class="info-row">
-                                        <span class="info-label">WebSocket Path:</span>
-                                        <span class="info-value">\${data.trojan.ws_path}</span>
-                                    </div>
-                                    <div class="info-row">
-                                        <span class="info-label">TLS:</span>
-                                        <span class="info-value">✅ فعال (443)</span>
-                                    </div>
-                                    <div class="config-link" id="trojan-link">\${data.trojan.config}</div>
-                                    <button class="copy-btn" onclick="copyConfig('trojan-link', 'Trojan')">📋 کپی کانفیگ Trojan</button>
-                                </div>
-                            \`;
-                            
-                            document.getElementById('configs').innerHTML = configsHtml;
-                        } catch (error) {
-                            document.getElementById('configs').innerHTML = \`
-                                <div style="text-align: center; color: white; padding: 2rem;">
-                                    <p>❌ خطا در بارگذاری. لطفاً صفحه را refresh کنید.</p>
-                                </div>
-                            \`;
-                        }
-                    }
-
-                    function copyConfig(elementId, type) {
-                        const text = document.getElementById(elementId).textContent;
-                        navigator.clipboard.writeText(text).then(() => {
-                            alert('✅ کانفیگ ' + type + ' کپی شد!');
-                        }).catch(() => {
-                            // Fallback
-                            const textarea = document.createElement('textarea');
-                            textarea.value = text;
-                            document.body.appendChild(textarea);
-                            textarea.select();
-                            document.execCommand('copy');
-                            document.body.removeChild(textarea);
-                            alert('✅ کانفیگ ' + type + ' کپی شد!');
-                        });
-                    }
-
-                    // Load configs on page load
-                    loadConfigs();
-                </script>
-            </body>
-            </html>
-        `);
+        // Load configs on page load
+        loadConfigs();
+    </script>
+</body>
+</html>`);
     });
 
+    // Start server
     app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🌐 Panel running on port ${PORT}`);
+        console.log('='.repeat(50));
+        console.log('🚀 Railway Xray Panel Started!');
+        console.log('='.repeat(50));
         console.log(`📡 Domain: ${RAILWAY_URL}`);
-        console.log(`🔑 UUID: ${uuid}`);
+        console.log(`🔑 UUID: ${UUID}`);
+        console.log(`🌐 Panel: http://0.0.0.0:${PORT}`);
+        console.log('='.repeat(50));
     });
 }
 
-// Main execution
+// تابع اصلی
 async function main() {
     console.log('🚀 Starting Railway Xray Panel...');
     
-    // Install Xray if needed
-    await installXray();
+    // دانلود Xray
+    const xrayInstalled = await downloadXray();
     
-    // Generate config
-    const { uuid, config } = generateXrayConfig();
-    console.log('✅ Xray config generated');
-    
-    // Start Xray in background
-    if (fs.existsSync(XRAY_PATH)) {
-        const xrayProcess = spawn(XRAY_PATH, ['-config', CONFIG_PATH], {
-            stdio: 'inherit'
-        });
-        
-        xrayProcess.on('error', (error) => {
-            console.error('❌ Xray failed:', error);
-        });
-        
-        console.log('✅ Xray proxy started');
-    } else {
-        console.log('⚠️ Xray not found, running panel only');
+    // اجرای Xray
+    if (xrayInstalled) {
+        startXray();
     }
     
-    // Start Express panel
-    startPanel(uuid, config);
+    // اجرای پنل
+    startPanel();
 }
 
-main().catch(console.error);
+// اجرا
+main().catch(error => {
+    console.error('❌ Fatal error:', error);
+    process.exit(1);
+});
