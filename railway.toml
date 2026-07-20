@@ -1,7 +1,4 @@
-Enter[build]
-  builder = "nixpacks"
-  
-[deploy]
-  startCommand = "npm start"
-  healthcheckPath = "/api/health"
-  healthcheckTimeout = 300
+rm railway.toml
+git add .
+git commit -m "Remove railway.toml"
+git push
